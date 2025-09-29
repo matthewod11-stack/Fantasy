@@ -1,0 +1,14 @@
+# Local caches and outputs
+.cache/
+.out/
+.metrics/
+
+# Virtualenv
+.venv/
+
+# Python cache
+__pycache__/
+.pytest_cache/
+
+# Editor files
+.vscode/
