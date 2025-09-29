@@ -28,6 +28,8 @@ app = typer.Typer(
 API_BASE_URL = "http://127.0.0.1:8000"
 
 # Alias map for PRD-friendly shorthand types -> canonical kinds
+# CLI normalization: Accept both hyphenated and underscored inputs,
+# store canonical underscored forms, convert to API hyphenated forms
 TYPE_ALIASES = {
     "performers": "top-performers",
     "busts": "biggest-busts",
