@@ -4,16 +4,28 @@ FastAPI application for Fantasy TikTok Engine.
 Main API server providing endpoints for fantasy football content generation.
 """
 
+from __future__ import annotations
+
 import logging
-from fastapi import FastAPI, HTTPException
+import os
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import get_settings
-from .schemas import GenerateRequest, GenerateResponse, HealthResponse, VersionResponse
+from apps.core import guardrails
 from packages.agents.data_agent import fetch_player_context
 from packages.agents.script_agent import render_script
-from apps.core import guardrails
-import os
+
+from .config import get_settings
+from .schemas import (
+    GenerateRequest,
+    GenerateResponse,
+    HealthResponse,
+    PRD_CONTENT_KINDS,
+    VersionResponse,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +33,47 @@ logger = logging.getLogger(__name__)
 
 # Load configuration
 settings = get_settings()
+
+# Template locations
+TEMPLATE_ROOT = Path("templates") / "script_templates"
+LEGACY_TEMPLATE_ROOT = Path("prompts") / "templates"
+TEMPLATE_FILENAME_OVERRIDES = {
+    "start-sit": "start_sit.md",
+    "waiver-wire": "waiver_wire.md",
+}
+
+
+def _resolve_template(kind: str) -> Path:
+    """Locate a template file for a given content kind."""
+    override = TEMPLATE_FILENAME_OVERRIDES.get(kind)
+    candidates = []
+    if override:
+        candidates.append(TEMPLATE_ROOT / override)
+    candidates.append(TEMPLATE_ROOT / f"{kind}.md")
+    # Allow underscore variant for backward compatibility
+    candidates.append(TEMPLATE_ROOT / f"{kind.replace('-', '_')}.md")
+    # Legacy fallbacks
+    if override:
+        candidates.append(LEGACY_TEMPLATE_ROOT / override)
+    candidates.append(LEGACY_TEMPLATE_ROOT / f"{kind}.md")
+    candidates.append(LEGACY_TEMPLATE_ROOT / f"{kind.replace('-', '_')}.md")
+
+    for path in candidates:
+        if path.exists():
+            return path
+    return Path()
+
+
+def _parse_header_bool(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n"}:
+        return False
+    return None
+
 
 # Create FastAPI app
 app = FastAPI(
@@ -53,80 +106,71 @@ async def get_version():
 
 
 @app.post("/generate", response_model=GenerateResponse)
-async def generate_content(request: GenerateRequest):
-    """
-    Generate fantasy football content for TikTok.
-    
-    Args:
-        request: Content generation parameters
-        
-    Returns:
-        Generated script content
-    """
+async def generate_content(
+    request: GenerateRequest,
+    guardrails_strict: Optional[str] = Header(
+        None, alias="X-Guardrails-Strict", convert_underscores=False
+    ),
+):
+    """Generate fantasy football content for TikTok."""
+    logger.info("Generating %s content for %s (week %s)", request.kind, request.player, request.week)
+
     try:
-        logger.info(f"Generating {request.kind} content for {request.player} (Week {request.week})")
-        
-        # Fetch player context using Data Agent
+        # Validate kind early (Literal already enforces this, but log explicitly for clarity)
+        if request.kind not in PRD_CONTENT_KINDS:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Unsupported content kind: {request.kind}")
+
         context = fetch_player_context(
             player=request.player,
             week=request.week,
-            kind=request.kind
+            kind=request.kind,
         )
-        
-        # Determine template path based on content kind
-        # Prefer canonical templates location, fall back to legacy prompts/templates
-        template_map = {
-            "start-sit": "templates/script_templates/start_sit.md",
-            "waiver-wire": "templates/script_templates/waiver_wire.md",
-            "injury-pivot": "templates/script_templates/injury_pivot.md",  # TODO: Create template
-            "trade-thermometer": "templates/script_templates/trade_thermometer.md",  # TODO: Create template
-        }
 
-        # Fallback map (legacy)
-        legacy_map = {
-            k: v.replace("templates/script_templates/", "prompts/templates/")
-            for k, v in template_map.items()
-        }
-
-        template_path = template_map.get(request.kind)
-        # If canonical template missing, fall back to legacy path
-        import os
-        if not template_path or not os.path.exists(template_path):
-            template_path = legacy_map.get(request.kind)
-        if not template_path:
-            raise HTTPException(status_code=400, detail=f"Unsupported content kind: {request.kind}")
-        
-        # If the data agent indicated the player is blocked (e.g., OUT/IR), stop early
         if isinstance(context, dict) and context.get("blocked"):
             reason = context.get("block_reason") or "blocked by data agent"
-            raise HTTPException(status_code=400, detail=f"Generation blocked: {reason}")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Generation blocked: {reason}")
 
-        # Generate script using Script Agent
+        template_path = _resolve_template(request.kind)
+        if not template_path:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Template not found for kind '{request.kind}'")
+
         script = render_script(
             kind=request.kind,
             context=context,
-            template_path=template_path
+            template_path=str(template_path),
         )
 
-        # Enforce length guardrail after rendering. Mode can be 'fail' or 'trim'.
-        mode = os.getenv("GUARDRAILS_LENGTH_MODE", "fail").lower()
-        gr = guardrails.enforce_length(script, max_words=70, mode=mode)
-        if not gr.get("ok"):
-            # Fail fast with a clear message
-            raise HTTPException(status_code=400, detail=f"Guardrail failed: {gr.get('reason')}")
+        strict_override = _parse_header_bool(guardrails_strict)
+        mode_env = os.getenv("GUARDRAILS_LENGTH_MODE", "fail").lower()
+        default_mode = "trim" if mode_env == "trim" else "fail"
+        mode = "fail" if strict_override is True else "trim" if strict_override is False else default_mode
 
-        # If trimmed, use trimmed script and indicate in response (note: schema stable)
-        final_script = gr.get("script") or script
+        guardrail_result = guardrails.enforce_length(script, max_words=70, mode=mode)
+        if not guardrail_result.get("ok"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Guardrail failed: {guardrail_result.get('reason')}",
+            )
 
-        logger.info(f"Successfully generated {len(final_script)} character script (words={gr.get('word_count')})")
-
+        final_script = guardrail_result.get("script") or script
+        logger.info(
+            "Generated script for %s (mode=%s, trimmed=%s, words=%s)",
+            request.kind,
+            mode,
+            guardrail_result.get("trimmed"),
+            guardrail_result.get("word_count"),
+        )
         return GenerateResponse(ok=True, script=str(final_script))
-        
-    except Exception as e:
-        logger.error(f"Error generating content: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Content generation failed: {str(e)}")
+
+    except HTTPException as exc:
+        logger.warning("Guarded error during generation: %s", exc.detail)
+        raise
+    except Exception as exc:  # pragma: no cover - safety net
+        logger.exception("Unexpected error generating content")
+        raise HTTPException(status_code=500, detail=f"Content generation failed: {exc}")
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host=settings.host, port=settings.port)
