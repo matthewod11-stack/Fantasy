@@ -109,7 +109,7 @@ def optimize_audio_for_tiktok(audio_path: str) -> str:
     
     optimized_path = audio_path.replace(".mp3", "_optimized.mp3")
     
-    print(f"🔧 [Voice Agent] Optimizing audio for TikTok")
+    print("🔧 [Voice Agent] Optimizing audio for TikTok")
     print(f"📁 [Voice Agent] Optimized path: {optimized_path}")
     
     # TODO: Use audio processing library (pydub, ffmpeg-python)

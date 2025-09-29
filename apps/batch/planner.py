@@ -12,18 +12,17 @@ from typing import List, Dict, Optional
 import os
 import random
 
+from apps.api.schemas import PRD_CONTENT_KINDS
+
 # Default canonical templates mapping (kept minimal here; planner will look up files)
 CANONICAL_DIR = os.path.join("templates", "script_templates")
 LEGACY_DIR = os.path.join("prompts", "templates")
+DEFAULT_TEMPLATE = "default.md"
 
 # PRD categories (friendly -> canonical filename)
 PRD_CATEGORIES = {
-    "start-sit": "start_sit.md",
-    "waiver-wire": "waiver_wire.md",
-    "top-performers": "top-performers.md",
-    "biggest-busts": "biggest-busts.md",
-    "trade-thermometer": "trade-thermometer.md",
-    "injury-pivot": "injury-pivot.md",
+    kind: ("start_sit.md" if kind == "start-sit" else "waiver_wire.md" if kind == "waiver-wire" else f"{kind}.md")
+    for kind in PRD_CONTENT_KINDS
 }
 
 # Minimal sample players used when no external roster is available
@@ -46,19 +45,17 @@ SAMPLE_PLAYERS = [
 
 
 def _choose_template_for_kind(kind: str) -> Optional[str]:
-    """Return the canonical template path if present, else fall back to legacy, else None."""
-    fname = PRD_CATEGORIES.get(kind)
-    if not fname:
-        # try mapping from kinds that already look like filenames
-        fname = kind + ".md"
-
-    can = os.path.join(CANONICAL_DIR, fname)
-    if os.path.exists(can):
-        return can
-    legacy = os.path.join(LEGACY_DIR, fname)
-    if os.path.exists(legacy):
-        return legacy
-    return None
+    """Return an existing template path for kind, or a default fallback."""
+    fname = PRD_CATEGORIES.get(kind, f"{kind}.md")
+    p1 = os.path.join(CANONICAL_DIR, fname)
+    if os.path.exists(p1):
+        return p1
+    p2 = os.path.join(LEGACY_DIR, fname)
+    if os.path.exists(p2):
+        return p2
+    # fallback to default
+    p3 = os.path.join(CANONICAL_DIR, DEFAULT_TEMPLATE)
+    return p3 if os.path.exists(p3) else p1  # last resort: non-existent, but deterministic
 
 
 def plan_week(week: int, types: Optional[List[str]] = None, count: int = 12) -> List[Dict]:

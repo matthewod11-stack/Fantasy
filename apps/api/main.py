@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apps.core import guardrails
 from packages.agents.data_agent import fetch_player_context
 from packages.agents.script_agent import render_script
+from adapters.wiring import load_env  # central adapter env
 
 from .config import get_settings
 from .schemas import (
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 # Load configuration
 settings = get_settings()
+# Load adapter-related env at startup
+_ENV = load_env()
 
 # Template locations
 TEMPLATE_ROOT = Path("templates") / "script_templates"

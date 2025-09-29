@@ -12,7 +12,6 @@ libraries installed.
 from typing import List, Dict, Optional
 import csv
 import os
-from pathlib import Path
 from .config import get_metrics_settings
 from .schemas import PostRecord
 

@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      DRY_RUN: "true"
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if ls requirements*.txt >/dev/null 2>&1; then
+            pip install -r requirements.txt || true
+            for f in requirements-*.txt; do [ -f "$f" ] && pip install -r "$f" || true; done
+          fi
+          # Ensure core dev/test deps exist even if no requirements file
+          python - <<'PY'
+          import importlib, sys, subprocess
+          for dep in ["pytest","ruff","typer","httpx","pydantic"]:
+              try: importlib.import_module(dep)
+              except ImportError: subprocess.check_call([sys.executable,"-m","pip","install","-q",dep])
+          PY
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Unit tests (pytest)
+        run: python -m pytest -q
+
+      - name: Prepare smoke artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp .out
+          echo "hello world" > tmp/script.md
+          touch .out/dummy.mp4
+
+      - name: Smoke 1 — ff_post generate
+        run: python -m apps.cli.ff_post generate --player "Test Player" --week 5 --type top-performers --outdir .out
+
+      - name: Smoke 2 — avatar render
+        run: python -m apps.cli.avatar render --week 5 --kind top-performers --script tmp/script.md --outdir .out
+
+      - name: Smoke 3 — tiktok upload
+        run: python -m apps.cli.tiktok_upload upload --file .out/dummy.mp4 --week 5 --kind top-performers --outdir .out
+
+      - name: Smoke 4 — ff_post pipeline
+        run: python -m apps.cli.ff_post pipeline --week 5 --types top-performers,waiver-wire --render --upload --outdir .out
+
+      - name: List artifacts
+        run: |
+          find .out -maxdepth 3 -type f | sort || true

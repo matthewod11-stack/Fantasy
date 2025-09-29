@@ -9,26 +9,26 @@ from pydantic import BaseModel, Field
 
 # Canonical list of PRD-supported content kinds (20 total)
 PRD_CONTENT_KINDS: Tuple[str, ...] = (
-    "start-sit",
     "waiver-wire",
-    "injury-pivot",
-    "trade-thermometer",
+    "start-sit",
     "top-performers",
     "biggest-busts",
-    "breakout-tracker",
+    "trade-thermometer",
+    "injury-pivot",
     "injury-report-rundowns",
     "coaching-playcalling-changes",
     "depth-chart-shifts",
     "suspension-return-watch",
     "rest-of-season-outlooks",
-    "matchup-exploits",
-    "playoff-prep",
-    "usage-trends",
-    "consistency-kings",
-    "fantasy-awards-memes",
+    "weekly-wraps-previews",
     "polls-hot-takes",
     "qna-replies",
-    "weekly-wraps-previews",
+    "sleepers-and-breakouts",
+    "must-adds-and-drops",
+    "buy-low-sell-high",
+    "matchup-exploits",
+    "rookie-radar",
+    "weather-watch",
 )
 
 

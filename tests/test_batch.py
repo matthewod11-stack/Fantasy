@@ -1,5 +1,3 @@
-import os
-import shutil
 from apps.batch.planner import plan_week
 from apps.cli import ff_post
 

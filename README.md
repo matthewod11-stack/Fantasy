@@ -28,6 +28,10 @@ Everything below supports that workflow and is idempotent.
 - `make fmt` / `make lint` — format and lint
 - `make health` — run the API health check
 
+Developer helpers:
+- `make format` — run `black` (if available) and `ruff --fix` (best-effort)
+- `make coverage` — run pytest with coverage and a terminal report
+
 New convenience commands:
 - `make batch-week week=5` — generate a planning `plan.json` for week 5
 - `make dry-run week=5 type=start-sit players="Player A,Player B"` — render locally to `.out/week-5`

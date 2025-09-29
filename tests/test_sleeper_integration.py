@@ -1,7 +1,5 @@
 import os
-import json
 import httpx
-import pytest
 
 from packages.agents import data_agent
 

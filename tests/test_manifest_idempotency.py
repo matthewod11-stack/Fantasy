@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from apps.batch import manifest as manifest_lib
@@ -31,7 +30,7 @@ def test_manifest_idempotency(tmp_path: Path):
 
     # Validate CSV contains exactly one row
     csv_text = manifest_csv.read_text(encoding="utf-8")
-    lines = [l for l in csv_text.splitlines() if l.strip()]
+    lines = [line for line in csv_text.splitlines() if line.strip()]
     # header + one row
     assert len(lines) == 2
 

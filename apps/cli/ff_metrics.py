@@ -4,9 +4,8 @@ CLI for metrics ingestion and simple reporting.
 from typing import Optional
 import typer
 import json
-from apps.metrics.storage import upsert_post, list_posts_by_date, read_post
+from apps.metrics.storage import upsert_post, list_posts_by_date
 from apps.metrics.schemas import PostRecord, DailySummary
-from apps.metrics.attribution import generate_utm_for_week
 
 app = typer.Typer(name="ff-metrics")
 
@@ -90,7 +89,8 @@ def export_week(week: int = typer.Option(...), out: str = typer.Option(".metrics
     rows = _read_all()
     filtered = [r for r in rows if r.get("week") == str(week)]
     # Write to out
-    import csv, os
+    import csv
+    import os
     os.makedirs(os.path.dirname(out), exist_ok=True)
     if filtered:
         keys = list(filtered[0].keys())

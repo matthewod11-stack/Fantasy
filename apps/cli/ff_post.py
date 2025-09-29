@@ -19,6 +19,11 @@ from apps.batch import manifest as manifest_lib
 from apps.batch.planner import plan_week
 from apps.export.scheduler_export import generate_scheduler_manifest
 from packages.agents.script_agent import render_script
+from adapters.wiring import load_env  # Ensure wiring is available for building adapters when needed
+from apps.batch.runner import run_pipeline
+from packages.utils.logging import get_logger
+
+_log = get_logger("cli.ff_post")
 
 app = typer.Typer(
     name="ff-post",
@@ -62,9 +67,13 @@ def generate(
     strict: bool = typer.Option(True, "--strict/--no-strict", help="When strict, fail on scripts longer than 70 words; otherwise auto-trim"),
     batch_week: Optional[int] = typer.Option(None, "--batch-week", help="Generate a full batch for a week (produces multiple posts)"),
     players: Optional[str] = typer.Option(None, "--players", help="Comma-separated list of players for batch generation"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Render templates locally and write outputs to .out/ without calling the API"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Render templates locally and write outputs to .out/ without calling the API", envvar="DRY_RUN"),
+    outdir: Optional[str] = typer.Option(None, "--outdir", "-o", help="Output root directory (defaults to .out/week-<N> when omitted)"),
 ):
     """Generate fantasy football content for a specific player and week."""
+
+    # Load env once for any downstream adapter usage (future API or local integrations)
+    load_env()
 
     canonical_kind = normalize_kind(type)
     if canonical_kind not in PRD_CONTENT_KINDS:
@@ -91,7 +100,7 @@ def generate(
 
     try:
         if dry_run:
-            _do_local_render(payload)
+            _do_local_render(payload, out_dir=outdir)
         else:
             _call_generate_api(payload, strict=strict)
     except httpx.ConnectError:
@@ -200,6 +209,31 @@ def batch(
 
 
 @app.command()
+def pipeline(
+    week: int = typer.Option(..., "--week", help="Week number to run the pipeline for"),
+    types: Optional[str] = typer.Option(None, "--types", help="Comma-separated list of types to include"),
+    render: bool = typer.Option(True, "--render/--no-render", help="Whether to render avatars"),
+    upload: bool = typer.Option(False, "--upload/--no-upload", help="Whether to upload to TikTok"),
+    outdir: Optional[str] = typer.Option(None, "--outdir", help="Output root directory"),
+):
+    """Run the content generation pipeline for a week.
+
+    The pipeline will generate scripts for planned items and optionally render
+    avatar videos and upload them to TikTok. DRY_RUN is respected via env.
+    """
+    kinds_list = [normalize_kind(t.strip()) for t in types.split(",")] if types else None
+    out = outdir or ".out"
+    try:
+        _log.info("pipeline.start", extra={"data": {"week": week, "kinds": kinds_list, "render": render, "upload": upload}})
+        run_pipeline(week=week, kinds=kinds_list, do_render=render, do_upload=upload, outdir=out)
+        _log.info("pipeline.complete", extra={"data": {"week": week}})
+        typer.echo("✅ Pipeline completed")
+    except Exception as exc:
+        typer.echo(f"❌ Pipeline failed: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def export_scheduler(
     week: int = typer.Option(..., "--week", help="Week number to export"),
     start_date: str = typer.Option(..., "--start-date", help="YYYY-MM-DD for the first day to schedule"),
@@ -271,6 +305,16 @@ def _resolve_template(kind: str) -> Optional[Path]:
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         first = sys.argv[1]
-        if first.startswith("-") or first not in ("generate", "health", "--help", "-h", "help", "batch", "export-scheduler"):
+        allowed = {
+            "generate",
+            "health",
+            "batch",
+            "pipeline",
+            "export-scheduler",
+            "help",
+            "--help",
+            "-h",
+        }
+        if first.startswith("-") or first not in allowed:
             sys.argv.insert(1, "generate")
     app()

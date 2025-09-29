@@ -34,7 +34,7 @@ def test_typo_and_low_confidence(tmp_path, monkeypatch):
 
     # Typo: 'Christan McCafrey' -> expect fuzzy or fallback with decent score
     res = name_resolver.resolve("Christan McCafrey")
-    assert res["name"] != None
+    assert res["name"] is not None
     # if rapidfuzz not installed, we expect fallback low confidence or decent SequenceMatcher
     assert "score" in res
 

@@ -1,4 +1,5 @@
 .PHONY: setup up down test fmt lint health
+.PHONY: format coverage
 
 # Setup development environment
 setup:
@@ -14,11 +15,21 @@ down:
 
 # Run tests
 test:
-	bash scripts/test.sh
+	if [ -x scripts/test.sh ]; then \
+		bash scripts/test.sh; \
+	else \
+		python -m pytest -q; \
+	fi
 
 # Format code
 fmt:
 	bash scripts/fmt.sh
+
+
+format:
+	@echo "Running black (if available) and ruff --fix"
+	@black . || true
+	@ruff check --fix . || true
 
 # Lint code
 lint:
@@ -27,6 +38,11 @@ lint:
 # Check API health
 health:
 	bash scripts/health.sh
+
+
+coverage:
+	@echo "Running pytest with coverage"
+	pytest --maxfail=1 --disable-warnings --cov=. --cov-report=term-missing
 
 # Generate a planning batch for a week (uses planner)
 batch-week:
