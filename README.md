@@ -135,10 +135,16 @@ cat .out/week-5/scheduler_manifest.csv
 Small, conservative guardrails are applied to generated scripts:
 
 - `GUARDRAILS_LENGTH_MODE` — how length violations are handled:
-  - `fail` (default): API responds 400 when script > 70 words
+  - `fail` (default): API responds 422 when script > 70 words
   - `trim`: API trims to 70 words automatically
 - CLI flag: `--strict` / `--no-strict` — `--strict` requests fail-on-long, `--no-strict` requests auto-trim
 - Player blocking: Data Agent returns `blocked: True` for OUT/IR players and the API responds with HTTP 400 and `block_reason`.
+
+### Strict vs trim length enforcement
+
+- API requests default to *strict* mode (`fail`). Provide `X-Guardrails-Strict: false` to switch a request into trim mode and receive a 200 response with a shortened script when it exceeds 70 words.
+- The `ff-post` CLI propagates this header for you: `--strict` keeps fail-fast semantics; `--no-strict` sends `X-Guardrails-Strict: false`.
+- Guardrail violations now return HTTP 422 with an explanatory `detail`, making it easier to branch on failures in operators or tests.
 
 Examples:
 
