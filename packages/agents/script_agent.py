@@ -61,6 +61,22 @@ def render_script(kind: str, context: Dict[str, Any], template_path: Optional[st
         if os.path.exists(template_path):
             with open(template_path, "r", encoding="utf-8") as fh:
                 template_src = fh.read()
+            # If the template uses python-style placeholders like {player} (not
+            # Jinja {{player}}), perform a safe .format_map substitution so the
+            # legacy markdown templates render as expected. Missing keys are
+            # replaced with an empty string to preserve robustness.
+            if "{" in template_src and "{{" not in template_src:
+                class _SafeDict(dict):
+                    def __missing__(self, key):  # type: ignore[override]
+                        return ""
+
+                try:
+                    # Use str keys only; convert numbers to strings if present
+                    safe_ctx = {k: ("" if v is None else v) for k, v in context.items()}
+                    template_src = template_src.format_map(_SafeDict(safe_ctx))
+                except Exception:
+                    # If formatting fails, fall back to raw template source
+                    pass
             template = env.from_string(template_src)
         else:
             # If the template_path is not a file, try to treat it as a template
