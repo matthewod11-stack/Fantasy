@@ -94,15 +94,5 @@ logs-api:
 	tail -n 100 -f $(LOG_FILE)
 
 health-api:
-	@echo "🔎 Checking http://$(HOST):$(PORT)/health"
-	@for i in 1 2 3 4 5; do \
-		if curl -fsS "http://$(HOST):$(PORT)/health" >/dev/null; then \
-			echo "✅ Health OK"; exit 0; \
-		fi; \
-		echo "…retry $$i"; sleep 1; \
-	done; \
-	echo "❌ Health check failed"; exit 1
-
-logs-api:
-	@echo "📜 Tailing $(LOG_FILE) (Ctrl-C to stop)"; \
-	tail -n 100 -f $(LOG_FILE)
+	@echo "🔎 Checking http://$(HOST):$(PORT)/health"; \
+	curl -fsS "http://$(HOST):$(PORT)/health" && echo "\n✅ Health OK" || (echo "❌ Health check failed" && exit 1)
