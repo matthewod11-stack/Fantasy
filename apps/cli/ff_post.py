@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import os
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -19,6 +20,7 @@ from apps.batch import manifest as manifest_lib
 from apps.batch.planner import plan_week
 from apps.export.scheduler_export import generate_scheduler_manifest
 from packages.agents.script_agent import render_script
+from packages.agents import data_agent
 from adapters.wiring import load_env  # Ensure wiring is available for building adapters when needed
 from apps.batch.runner import run_pipeline
 from packages.utils.logging import get_logger
@@ -65,6 +67,7 @@ def generate(
     week: Optional[int] = typer.Option(None, "--week", "-w", help="NFL week number (1-18)"),
     type: str = typer.Option(..., "--type", "-t", help="Type of content to generate (aliases allowed)"),
     strict: bool = typer.Option(True, "--strict/--no-strict", help="When strict, fail on scripts longer than 70 words; otherwise auto-trim"),
+    with_stats: bool = typer.Option(os.getenv("SLEEPER_ENABLED", "false").lower() == "true", "--with-stats/--no-stats", help="Enable fetching live Sleeper stats (overrides SLEEPER_ENABLED env)"),
     batch_week: Optional[int] = typer.Option(None, "--batch-week", help="Generate a full batch for a week (produces multiple posts)"),
     players: Optional[str] = typer.Option(None, "--players", help="Comma-separated list of players for batch generation"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Render templates locally and write outputs to .out/ without calling the API", envvar="DRY_RUN"),
@@ -74,6 +77,12 @@ def generate(
 
     # Load env once for any downstream adapter usage (future API or local integrations)
     load_env()
+
+    # Ensure Data Agent honor the CLI override for Sleeper usage
+    try:
+        data_agent.SLEEPER_ENABLED = bool(with_stats)
+    except Exception:
+        pass
 
     canonical_kind = normalize_kind(type)
     if canonical_kind not in PRD_CONTENT_KINDS:
@@ -95,7 +104,7 @@ def generate(
         typer.echo("❌ Week must be between 1 and 18 (or use --batch-week)", err=True)
         raise typer.Exit(code=1)
 
-    typer.echo(f"🏈 Generating {canonical_kind} content for {player} (Week {week})...")
+    typer.echo(f"🏈 Generating {canonical_kind} content for {player} (Week {week})... (with-stats={with_stats})")
     payload = {"player": player, "week": week, "kind": canonical_kind}
 
     try:

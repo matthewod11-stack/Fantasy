@@ -20,6 +20,8 @@ from typing import Any, Dict, Optional
 import os
 
 from adapters import OpenAIAdapter, ScriptRequest  # type: ignore
+from packages.agents import data_agent
+from packages.agents.script_agent import render_script
 
 # Reuse planner's template resolver to avoid duplication
 try:
@@ -107,12 +109,51 @@ def generate_content(
     No environment reads here. The caller wires an adapter configured with
     dry_run or live settings.
     """
-    template = _load_template_text(kind)
-    prompt = _render_prompt(template, kind=kind, week=int(week), player=player, extra=extra)
+    # Build a validated context from Data Agent (live or mock depending on env)
+    # The Data Agent provides useful keys used by Jinja templates.
+    context = data_agent.fetch_player_context(player=player or "", week=int(week), kind=kind)
 
-    # Tone/audience can be adjusted later; keep minimal here
-    req = ScriptRequest(prompt=prompt, audience="fantasy football", tone="energetic")
-    script = adapter.generate_script(req)
+    # Merge in any extra planner-provided keys (extra should not overwrite existing
+    # validated context unless explicitly provided by the planner)
+    if extra:
+        merged = dict(context)
+        merged.update(extra)
+        context = merged
+
+    # Render script via Script Agent (Jinja2 template + optional OpenAI polishing).
+    # Prefer to resolve a file-path template when possible so StrictUndefined works
+    # with the expected template variables.
+    # Try planner resolver first (keeps single source of truth)
+    template_path = None
+    try:
+        # Planner resolver may return a path string
+        t = _resolve_template(kind) if callable(_resolve_template) else None
+        if t:
+            template_path = t
+    except Exception:
+        template_path = None
+
+    # Render script using the Script Agent. Pass the injected OpenAI adapter so
+    # that polishing (if enabled) respects the same adapter/dry-run determinism
+    # used by the pipeline. render_script will either return the rendered
+    # template (when OPENAI_ENABLED is false) or the adapter-polished result
+    # (when OPENAI_ENABLED is true).
+    try:
+        rendered_or_polished = render_script(kind=kind, context=context, template_path=str(template_path) if template_path else None, openai_adapter=adapter)
+    except TypeError:
+        rendered_or_polished = render_script(kind=kind, context=context, template_path=str(template_path) if template_path else None)
+
+    # Preserve previous dry-run deterministic behavior: when the pipeline's
+    # OpenAI polishing is disabled (OPENAI_ENABLED=false) but the injected
+    # adapter is in dry-run mode, pass the rendered template to the adapter to
+    # obtain the deterministic stub. If OPENAI is enabled, render_script would
+    # already have used the adapter.
+    openai_enabled = os.getenv("OPENAI_ENABLED", "false").lower() in ("1", "true", "yes")
+    if getattr(adapter, "dry_run", False) and not openai_enabled:
+        req = ScriptRequest(prompt=rendered_or_polished, audience="fantasy football", tone="energetic")
+        script = adapter.generate_script(req)
+    else:
+        script = rendered_or_polished
 
     caption = _build_caption(kind, int(week), dry_run=getattr(adapter, "dry_run", False))
     hashtags = _build_hashtags(kind, int(week))

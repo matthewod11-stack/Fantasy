@@ -33,7 +33,7 @@ DEFAULT_KIND_TO_TEMPLATE = {
 }
 
 
-def render_script(kind: str, context: Dict[str, Any], template_path: Optional[str] = None) -> str:
+def render_script(kind: str, context: Dict[str, Any], template_path: Optional[str] = None, openai_adapter=None) -> str:
     """Render a script from a Jinja2 template.
 
     Args:
@@ -88,9 +88,15 @@ def render_script(kind: str, context: Dict[str, Any], template_path: Optional[st
     if not enabled:
         return rendered
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    dry_run = api_key is None
-    adapter = OpenAIAdapter(api_key=api_key, client=None, dry_run=dry_run)
+    # If a caller provided an OpenAIAdapter (e.g., pipeline wiring), use it to
+    # preserve dry_run determinism and any injected client. Otherwise, build a
+    # minimal adapter from env like previous behavior.
+    adapter = openai_adapter
+    if adapter is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        dry_run = api_key is None
+        adapter = OpenAIAdapter(api_key=api_key, client=None, dry_run=dry_run)
+
     req = ScriptRequest(
         prompt=rendered,
         audience=context.get("audience"),
