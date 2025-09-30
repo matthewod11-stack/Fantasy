@@ -1,132 +1,101 @@
-"""
-Script Agent for Fantasy TikTok Engine.
+"""Script Agent using Jinja2 templates with optional OpenAI post-processing.
 
-Renders content templates with player context data to generate TikTok scripts.
-TODO: Enhance template system as specified in PRD sections:
-- Dynamic template selection based on player performance trends
-- A/B testing framework for different content variations
-- Personalization based on user preferences and engagement history
+This module provides a deterministic, strict-template rendering path using
+Jinja2 (StrictUndefined). When OPENAI_ENABLED is set to a truthy value the
+rendered template will be passed to the OpenAI adapter as a prompt for
+optional polishing/rewriting. If no OpenAI API key is present the adapter is
+used in dry-run mode so this code is safe to run with no `.env`.
 """
+
+from __future__ import annotations
 
 import os
-from typing import Dict, Any
+from typing import Any, Dict, Optional
+
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateNotFound, UndefinedError
+
+from adapters.openai_adapter import OpenAIAdapter, ScriptRequest
 
 
-def render_script(kind: str, context: Dict[str, Any], template_path: str) -> str:
-    """
-    Render a content script using template and context data.
-    
+TEMPLATES_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "generation", "templates")
+)
+
+
+def _jinja_env() -> Environment:
+    loader = FileSystemLoader(TEMPLATES_DIR)
+    return Environment(loader=loader, undefined=StrictUndefined, autoescape=False)
+
+
+DEFAULT_KIND_TO_TEMPLATE = {
+    "waiver-wire": "waiver_wire.j2",
+    "top-performers-week": "top_performers_week.j2",
+}
+
+
+def render_script(kind: str, context: Dict[str, Any], template_path: Optional[str] = None) -> str:
+    """Render a script from a Jinja2 template.
+
     Args:
-        kind: Content type ("start-sit", "waiver-wire", etc.)
-        context: Player and game context data
-        template_path: Path to template file
-        
+        kind: logical template kind (used to pick a default template)
+        context: mapping used to render the template; StrictUndefined is used so
+                 missing keys raise an exception.
+        template_path: optional explicit path to a template file. If provided
+                       and the path exists it will be used directly.
+
     Returns:
-        Rendered script content ready for TikTok
-        
-    TODO: Enhance per PRD requirements:
-    - Add template versioning and A/B testing capabilities
-    - Implement dynamic template selection based on player trends
-    - Add content personalization based on user engagement data
-    - Include automated hashtag optimization
-    - Add content length optimization for TikTok algorithm
+        Final script text. If OPENAI_ENABLED is truthy the rendered template
+        will be sent to the OpenAI adapter which may rewrite it; otherwise
+        the raw rendered template is returned.
+
+    Raises:
+        jinja2.UndefinedError: when required context keys are missing.
+        FileNotFoundError: when the requested template cannot be found.
     """
-    
-    try:
-        # Prefer canonical template path; if not present, try legacy prompts/templates
-        if not os.path.exists(template_path):
-            # Try swapping to legacy location if available
-            legacy_path = template_path.replace("templates/script_templates/", "prompts/templates/")
-            if os.path.exists(legacy_path):
-                template_path = legacy_path
+    # Load and render using Jinja2 StrictUndefined so missing variables fail fast
+    env = _jinja_env()
 
-        # Load template content
-        if not os.path.exists(template_path):
-            print(f"⚠️  [Script Agent] Template not found: {template_path}")
-            # Return a basic fallback template
-            return _get_fallback_template(kind, context)
-
-        with open(template_path, 'r', encoding='utf-8') as f:
-            template_content = f.read()
-
-        # Render template with context data
-        try:
-            rendered_script = template_content.format(**context)
-            print(f"📝 [Script Agent] Rendered {kind} script ({len(rendered_script)} chars)")
-            return rendered_script
-
-        except KeyError as e:
-            print(f"⚠️  [Script Agent] Missing template variable: {e}")
-            # Try to render with available variables
-            return _safe_render_template(template_content, context)
-
-    except Exception as e:
-        print(f"❌ [Script Agent] Error rendering template: {e}")
-        return _get_fallback_template(kind, context)
-
-
-def _get_fallback_template(kind: str, context: Dict[str, Any]) -> str:
-    """Generate a basic fallback template when main template fails."""
-    
-    player = context.get("player", "Player")
-    week = context.get("week", "X")
-    
-    if kind == "start-sit":
-        return f"""🔥 **WEEK {week} START/SIT ALERT** 🔥
-
-Should you start **{player}** this week?
-
-My take: {context.get("recommendation", "Analyze carefully")}
-
-Confidence: {context.get("confidence", 5)}/10
-
-What do YOU think? Drop your lineup questions below! 👇
-
-#FantasyFootball #NFL #Week{week} #StartSit"""
-    
-    elif kind == "waiver-wire":
-        return f"""🚨 **WAIVER WIRE ALERT** 🚨
-
-**{player}** needs to be on your radar!
-
-Rostered: {context.get("rostered_pct", "XX")}%
-
-Don't let someone else snag this gem! Hit that waiver wire! 🏃‍♂️💨
-
-#WaiverWire #FantasyFootball #Week{week}"""
-    
+    # If an explicit template path is provided and exists, render from its
+    # contents (this makes tests and callers flexible).
+    if template_path:
+        if os.path.exists(template_path):
+            with open(template_path, "r", encoding="utf-8") as fh:
+                template_src = fh.read()
+            template = env.from_string(template_src)
+        else:
+            # If the template_path is not a file, try to treat it as a template
+            # name within the templates directory.
+            try:
+                template_name = os.path.basename(template_path)
+                template = env.get_template(template_name)
+            except TemplateNotFound as exc:
+                raise FileNotFoundError(f"Template not found: {template_path}") from exc
     else:
-        return f"""🏈 **FANTASY ALERT** 🏈
+        # Choose a sensible default template for the kind
+        template_name = DEFAULT_KIND_TO_TEMPLATE.get(kind)
+        if not template_name:
+            raise FileNotFoundError(f"No template specified for kind: {kind}")
+        try:
+            template = env.get_template(template_name)
+        except TemplateNotFound as exc:
+            raise FileNotFoundError(f"Template not found: {template_name}") from exc
 
-**{player}** - Week {week}
+    # Render the template. StrictUndefined will raise UndefinedError on missing keys.
+    rendered = template.render(**context)
 
-{context.get("summary", "Check out this fantasy football insight!")}
+    # Optionally pass the rendered text to OpenAI for polishing when enabled.
+    enabled = os.getenv("OPENAI_ENABLED", "false").lower() in ("1", "true", "yes")
+    if not enabled:
+        return rendered
 
-#FantasyFootball #NFL #Week{week}"""
-
-
-def _safe_render_template(template: str, context: Dict[str, Any]) -> str:
-    """Safely render template, skipping missing variables."""
-    
-    # Simple approach: try to replace what we can
-    try:
-        # Create a safe context that provides empty strings for missing keys
-        from string import Formatter
-        
-        class SafeFormatter(Formatter):
-            def get_value(self, key, args, kwargs):
-                # Formatter.get_value expects (self, key, args, kwargs)
-                if isinstance(key, str):
-                    try:
-                        return kwargs[key]
-                    except KeyError:
-                        return f"{{{key}}}"  # Keep placeholder for missing keys
-                else:
-                    return super().get_value(key, args, kwargs)
-        
-        formatter = SafeFormatter()
-        return formatter.format(template, **context)
-        
-    except Exception:
-        # Last resort: return template as-is
-        return template
+    api_key = os.getenv("OPENAI_API_KEY")
+    dry_run = api_key is None
+    adapter = OpenAIAdapter(api_key=api_key, client=None, dry_run=dry_run)
+    req = ScriptRequest(
+        prompt=rendered,
+        audience=context.get("audience"),
+        tone=context.get("tone", "energetic"),
+        max_output_tokens=512,
+        temperature=float(context.get("temperature", 0.7)),
+    )
+    return adapter.generate_script(req)

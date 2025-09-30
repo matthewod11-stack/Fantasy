@@ -5,3 +5,4 @@ pydantic
 httpx
 pytest
 ruff
+jinja2

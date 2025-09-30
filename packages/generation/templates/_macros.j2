@@ -1,0 +1,12 @@
+{# Shared macros for script templates #}
+{% macro player_line(player, position=None, team=None) -%}
+{{ player }}{% if position %} ({{ position }}){% endif %}{% if team %} - {{ team }}{% endif %}
+{%- endmacro %}
+
+{% macro team_line(team, record=None) -%}
+{{ team }}{% if record %} ({{ record }}){% endif %}
+{%- endmacro %}
+
+{% macro stat_row(label, value) -%}
+{{ label }}: {{ value }}
+{%- endmacro %}
