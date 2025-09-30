@@ -19,6 +19,64 @@ from packages.render.compositor import compose_video
 from adapters.heygen_adapter import HeyGenRenderRequest
 from packages.agents.packaging_agent import build_caption, build_hashtags, package_metadata, to_exportable
 from apps.cli import approval as approval_cli
+from dataclasses import dataclass, asdict
+import json as _json
+import logging
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PlanRecord:
+    week: int
+    kinds: list | None
+    items: list
+
+
+@dataclass
+class GenerateRecord:
+    entry_id: str
+    player: str | None
+    kind: str
+    week: int
+    script_path: str
+    script_text: str
+
+
+@dataclass
+class ApproveRecord:
+    entry_id: str
+    approved: bool
+    approver: dict | None
+
+
+@dataclass
+class RenderRecord:
+    entry_id: str
+    avatar_dir: str
+    video_path: str | None
+
+
+@dataclass
+class PublishRecord:
+    entry_id: str
+    upload_meta: dict | None
+
+
+def _emit_event(name: str, payload: Any) -> None:
+    """Emit a structured event to logs (JSON)."""
+    try:
+        if hasattr(payload, "__dataclass_fields__"):
+            payload_obj = asdict(payload)
+        else:
+            payload_obj = payload
+        rec = {"event": name, "payload": payload_obj}
+        # Use logger.info so it's easy to capture in tests or logs
+        logger.info(_json.dumps(rec, ensure_ascii=False))
+    except Exception:
+        # Best-effort: fallback to plain print
+        print(_json.dumps({"event": name, "payload": str(payload)}))
 
 # For type-checkers only — keeps runtime flexible while satisfying Pylance
 if TYPE_CHECKING:
@@ -116,6 +174,7 @@ def run_pipeline(
     tiktok = build_tiktok(env)  # Protocol is fine for method discovery
 
     plan = plan_week(week, types=kinds) if kinds else plan_week(week)
+    _emit_event("planned", PlanRecord(week=week, kinds=kinds or [], items=plan))
 
     out_root_path = Path(outdir) / f"week-{week}"
     out_root_path.mkdir(parents=True, exist_ok=True)
@@ -124,133 +183,175 @@ def run_pipeline(
     entries = manifest_lib.read_manifest(manifest_path)
 
     for item in plan:
+        # Plan-level values
         player = _ensure_str(item.get("player"))
         kind = _ensure_str(item.get("kind"))
 
         if not kind:
-            # Skip invalid items defensively
             continue
 
-        # Generate content (adapter cast keeps type checker satisfied)
-        gen = generate_content(kind, week, player=player or None, extra=item, adapter=openai)
-        script_text = _ensure_str(gen.get("script_text"))
+        # generate
+        gen_rec = generate_step(item, week, out_root_path, openai)
+        _emit_event("generated", gen_rec)
 
-        # Write script file deterministically
-        safe_player = (player or "").replace(" ", "_")
-        filename = f"{safe_player}__{kind}.md"
-        script_path = out_root_path / filename
-        script_path.write_text(script_text, encoding="utf-8")
-
-        # Upsert manifest
-        new_entry = {"player": player or None, "week": int(week), "kind": kind, "path": filename}
+        # upsert manifest and write CSV (idempotent)
+        new_entry = {"player": gen_rec.player or None, "week": int(week), "kind": gen_rec.kind, "path": Path(gen_rec.script_path).name}
         entries = manifest_lib.upsert(entries, new_entry, key_fields=("player", "kind", "week"))
         manifest_lib.write_manifest_atomic(manifest_path, entries)
         manifest_lib.write_csv_from_entries(out_root_path / "manifest.csv", entries)
 
-        # Approval gate: require entry present and approved in approval/manifest.csv or .json
-        approvals = approval_cli.read_manifest()
-        # Find matching approval by id or player/week/type
-        entry_id = f"{player}__{kind}__{week}"
-        approved = False
-        approval_row = None
-        for a in approvals:
-            if a.get("id") == entry_id or (a.get("player") == player and a.get("week") == str(week) and a.get("type") == kind):
-                approval_row = a
-                approved = (str(a.get("approved", "false")).lower() == "true")
-                break
-
-        if not approved:
-            # Log skipped item and write audit entry
-            audit_dir = out_root_path / "audit"
-            audit_dir.mkdir(parents=True, exist_ok=True)
-            skip_log = audit_dir / "skipped.log"
-            who = approval_row.get("reviewer") if approval_row else "none"
-            note = approval_row.get("note") if approval_row else "not in manifest"
-            skip_line = f"{datetime.utcnow().isoformat()}Z\t{entry_id}\tskipped\treviewer={who}\tnote={note}\n"
-            with skip_log.open("a", encoding="utf-8") as f:
-                f.write(skip_line)
-            # Continue without rendering/uploading; still generate packaging metadata for review
-            caption = build_caption(script_text, kind, week, dry_run=env.DRY_RUN)
-            hashtags = build_hashtags(kind, week)
-            meta = package_metadata(entry_id, kind, week, player or None, caption, hashtags, extra={"approved": False})
-            (out_root_path / f"{entry_id}.meta.json").write_text(to_exportable(meta), encoding="utf-8")
-            print(f"⏭️ Skipped {entry_id} — not approved; audit written to {skip_log}")
-            # Ensure tiktok_uploads.json exists when uploads were requested by caller
+        # approval
+        approve_rec = approve_gate(gen_rec, week, out_root_path)
+        _emit_event("approved", approve_rec)
+        if not approve_rec.approved:
+            # write metadata for review and continue
+            caption = build_caption(gen_rec.script_text, gen_rec.kind, gen_rec.week, dry_run=env.DRY_RUN)
+            hashtags = build_hashtags(gen_rec.kind, gen_rec.week)
+            meta = package_metadata(approve_rec.entry_id, gen_rec.kind, gen_rec.week, gen_rec.player or None, caption, hashtags, extra={"approved": False})
+            (out_root_path / f"{approve_rec.entry_id}.meta.json").write_text(to_exportable(meta), encoding="utf-8")
+            # ensure tiktok uploads file present if requested
             if do_upload:
                 up = out_root_path / "tiktok_uploads.json"
                 try:
-                    up.write_text(json.dumps({"uploads": [], "skipped": [entry_id]}, indent=2), encoding="utf-8")
+                    up.write_text(_json.dumps({"uploads": [], "skipped": [approve_rec.entry_id]}, indent=2), encoding="utf-8")
                 except Exception:
                     pass
             continue
 
-        # If approved, write packaging metadata (approved=true)
-        caption = build_caption(script_text, kind, week, dry_run=env.DRY_RUN)
-        hashtags = build_hashtags(kind, week)
-        meta = package_metadata(entry_id, kind, week, player or None, caption, hashtags, extra={"approved": True, "approver": approval_row})
-        (out_root_path / f"{entry_id}.meta.json").write_text(to_exportable(meta), encoding="utf-8")
+        # approved -> package metadata
+        caption = build_caption(gen_rec.script_text, gen_rec.kind, gen_rec.week, dry_run=env.DRY_RUN)
+        hashtags = build_hashtags(gen_rec.kind, gen_rec.week)
+        meta = package_metadata(approve_rec.entry_id, gen_rec.kind, gen_rec.week, gen_rec.player or None, caption, hashtags, extra={"approved": True, "approver": approve_rec.approver})
+        (out_root_path / f"{approve_rec.entry_id}.meta.json").write_text(to_exportable(meta), encoding="utf-8")
 
-        # Optional render via HeyGen
+        # render
+        render_rec = None
         if do_render:
-            avatar_dir = out_root_path / f"{safe_player}__{kind}" / "avatar"
-            avatar_dir.mkdir(parents=True, exist_ok=True)
+            render_rec = render_step(gen_rec, item, out_root_path, heygen, env)
+            _emit_event("rendered", render_rec)
 
-            req = HeyGenRenderRequest(
-                script_text=script_text,
-                avatar_id=_ensure_str(item.get("avatar_id"), "default-avatar-id"),
-                voice_id=item.get("voice_id"),
-            )
-            res = heygen.render_text_to_avatar(req)
-            # Write initial response
-            (avatar_dir / "render.json").write_text(json.dumps(res, indent=2), encoding="utf-8")
-
-            if not env.DRY_RUN:
-                max_poll = 90
-                interval = 5
-                start = time.time()
-                video_id = _ensure_str(res.get("video_id"))
-                while time.time() - start < max_poll:
-                    if not video_id:
-                        break
-                    status = heygen.poll_status(video_id)
-                    (avatar_dir / "render.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
-                    st = _ensure_str(status.get("status"))
-                    prog = int(status.get("progress", 0) or 0)
-                    if "complete" in st.lower() or prog == 100:
-                        # would download video here; create placeholder
-                        (avatar_dir / "video.mp4").write_bytes(b"")
-                        break
-                    time.sleep(interval)
-                else:
-                    raise RuntimeError("HeyGen render timed out")
-            else:
-                # DRY_RUN: create placeholder artifact
-                (avatar_dir / "video.mp4").touch()
-
-        # Optional upload to TikTok
+        # publish
+        publish_rec = None
         if do_upload:
-            # In dry-run, TikTok adapter will return stub responses
-            # In non-dry-run, require tokens via env
-            access_token = _ensure_str(os.getenv("TIKTOK_ACCESS_TOKEN"))
-            open_id = _ensure_str(os.getenv("TIKTOK_OPEN_ID"))
-            if not env.DRY_RUN and (not access_token or not open_id):
-                raise RuntimeError("Missing TIKTOK_ACCESS_TOKEN or TIKTOK_OPEN_ID in environment")
+            publish_rec = publish_step(gen_rec, out_root_path, tiktok, env)
+            _emit_event("published", publish_rec)
 
-            # Read video bytes — prefer generated avatar video if rendered
-            video_file = out_root_path / f"{safe_player}__{kind}" / "avatar" / "video.mp4"
-            if not video_file.exists():
-                # fallback to writing a small placeholder and uploading that
-                tmp_vid = out_root_path / f"{safe_player}__{kind}.mp4"
-                tmp_vid.write_bytes(b"")
-                video_file = tmp_vid
 
-            data = video_file.read_bytes()
+def generate_step(item: dict, week: int, out_root_path: Path, openai_adapter) -> GenerateRecord:
+    """Generate script text for a plan item and write deterministic script file.
 
-            init = tiktok.init_upload(access_token, open_id, draft=True)
-            upload_id = _ensure_str(init.get("upload_id"))
-            upload_res = tiktok.upload_video(access_token, open_id, upload_id, data, filename=video_file.name)
-            status = tiktok.check_upload_status(access_token, open_id, upload_id)
+    Returns a GenerateRecord.
+    """
+    player = _ensure_str(item.get("player"))
+    kind = _ensure_str(item.get("kind"))
+    gen = generate_content(kind, week, player=player or None, extra=item, adapter=openai_adapter)
+    script_text = _ensure_str(gen.get("script_text"))
 
-            # Write upload metadata alongside week manifest
-            up = out_root_path / "tiktok_uploads.json"
-            up.write_text(json.dumps({"init": init, "upload": upload_res, "status": status}, indent=2), encoding="utf-8")
+    safe_player = (player or "").replace(" ", "_")
+    filename = f"{safe_player}__{kind}.md"
+    script_path = out_root_path / filename
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script_text, encoding="utf-8")
+
+    entry_id = f"{player}__{kind}__{week}"
+    return GenerateRecord(entry_id=entry_id, player=player or None, kind=kind, week=int(week), script_path=str(script_path), script_text=script_text)
+
+
+def approve_gate(gen_rec: GenerateRecord, week: int, out_root_path: Path) -> ApproveRecord:
+    """Check approvals and write audit on skip. Returns ApproveRecord.
+    This function is deterministic and idempotent.
+    """
+    approvals = approval_cli.read_manifest()
+    entry_id = gen_rec.entry_id
+    approved = False
+    approval_row = None
+    for a in approvals:
+        if a.get("id") == entry_id or (a.get("player") == gen_rec.player and a.get("week") == str(week) and a.get("type") == gen_rec.kind):
+            approval_row = a
+            approved = (str(a.get("approved", "false")).lower() == "true")
+            break
+
+    if not approved:
+        audit_dir = out_root_path / "audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        skip_log = audit_dir / "skipped.log"
+        who = approval_row.get("reviewer") if approval_row else "none"
+        note = approval_row.get("note") if approval_row else "not in manifest"
+        skip_line = f"{datetime.utcnow().isoformat()}Z\t{entry_id}\tskipped\treviewer={who}\tnote={note}\n"
+        with skip_log.open("a", encoding="utf-8") as f:
+            f.write(skip_line)
+    return ApproveRecord(entry_id=entry_id, approved=approved, approver=approval_row)
+
+
+def render_step(gen_rec: GenerateRecord, item: dict, out_root_path: Path, heygen, env) -> RenderRecord:
+    """Render an avatar video from script_text. Returns RenderRecord.
+    Creates placeholder artifacts in DRY_RUN.
+    """
+    player = gen_rec.player or ""
+    safe_player = player.replace(" ", "_")
+    avatar_dir = out_root_path / f"{safe_player}__{gen_rec.kind}" / "avatar"
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+
+    req = HeyGenRenderRequest(
+        script_text=gen_rec.script_text,
+        avatar_id=_ensure_str(item.get("avatar_id"), "default-avatar-id"),
+        voice_id=item.get("voice_id"),
+    )
+    res = heygen.render_text_to_avatar(req)
+    (avatar_dir / "render.json").write_text(json.dumps(res, indent=2), encoding="utf-8")
+
+    video_path = None
+    if not env.DRY_RUN:
+        max_poll = 90
+        interval = 5
+        start = time.time()
+        video_id = _ensure_str(res.get("video_id"))
+        while time.time() - start < max_poll:
+            if not video_id:
+                break
+            status = heygen.poll_status(video_id)
+            (avatar_dir / "render.json").write_text(json.dumps(status, indent=2), encoding="utf-8")
+            st = _ensure_str(status.get("status"))
+            prog = int(status.get("progress", 0) or 0)
+            if "complete" in st.lower() or prog == 100:
+                (avatar_dir / "video.mp4").write_bytes(b"")
+                video_path = str(avatar_dir / "video.mp4")
+                break
+            time.sleep(interval)
+        else:
+            raise RuntimeError("HeyGen render timed out")
+    else:
+        (avatar_dir / "video.mp4").touch()
+        video_path = str(avatar_dir / "video.mp4")
+
+    return RenderRecord(entry_id=gen_rec.entry_id, avatar_dir=str(avatar_dir), video_path=video_path)
+
+
+def publish_step(gen_rec: GenerateRecord, out_root_path: Path, tiktok, env) -> PublishRecord:
+    """Upload the video to TikTok (or dry-run stub). Returns PublishRecord.
+    Writes tiktok_uploads.json deterministically.
+    """
+    player = gen_rec.player or ""
+    safe_player = player.replace(" ", "_")
+    video_file = out_root_path / f"{safe_player}__{gen_rec.kind}" / "avatar" / "video.mp4"
+    if not video_file.exists():
+        tmp_vid = out_root_path / f"{safe_player}__{gen_rec.kind}.mp4"
+        tmp_vid.write_bytes(b"")
+        video_file = tmp_vid
+
+    data = video_file.read_bytes()
+
+    access_token = _ensure_str(os.getenv("TIKTOK_ACCESS_TOKEN"))
+    open_id = _ensure_str(os.getenv("TIKTOK_OPEN_ID"))
+    if not env.DRY_RUN and (not access_token or not open_id):
+        raise RuntimeError("Missing TIKTOK_ACCESS_TOKEN or TIKTOK_OPEN_ID in environment")
+
+    init = tiktok.init_upload(access_token, open_id, draft=True)
+    upload_id = _ensure_str(init.get("upload_id"))
+    upload_res = tiktok.upload_video(access_token, open_id, upload_id, data, filename=video_file.name)
+    status = tiktok.check_upload_status(access_token, open_id, upload_id)
+
+    up = out_root_path / "tiktok_uploads.json"
+    up.write_text(_json.dumps({"init": init, "upload": upload_res, "status": status}, indent=2), encoding="utf-8")
+
+    return PublishRecord(entry_id=gen_rec.entry_id, upload_meta={"init": init, "upload": upload_res, "status": status})
