@@ -14,6 +14,19 @@ from packages.utils.logging import get_logger
 _log = get_logger("adapters.tiktok")
 
 
+def _banner_if_live(dry_run: bool, cfg: "TikTokOAuthConfig") -> None:
+    """Emit a conspicuous log/banner when running in live mode.
+
+    This helps ops notice production-impacting runs in logs.
+    """
+    if not dry_run:
+        try:
+            key = cfg.client_key
+        except Exception:
+            key = None
+        _log.info("TIKTOK LIVE MODE ENABLED", extra={"data": {"client_key": key}})
+
+
 @runtime_checkable
 class HTTPClientProtocol(Protocol):
     """Minimal HTTP client protocol used by adapters."""
@@ -73,6 +86,12 @@ class TikTokAdapter:
         self.oauth_config = config
         self.http_client = http_client
         self.dry_run = bool(dry_run)
+        # Fail fast if live and required creds are missing
+        if not self.dry_run:
+            if not self.config.client_key or not self.config.client_secret:
+                raise RuntimeError("TikTokAdapter: missing client_key/client_secret in live mode")
+        # Emit a banner when running live to make runs noisy in logs
+        _banner_if_live(self.dry_run, self.config)
 
     # OAuth
     def build_login_url(self, state: str, scopes: list[str]) -> str:

@@ -75,6 +75,12 @@ class Env:
     TIKTOK_REDIRECT_URI: Optional[str] = None
     PUBLIC_BASE_URL: Optional[str] = None
     DRY_RUN: bool = False
+    # Live toggles (opt-in). When true, builders become strict and will fail
+    # fast if creds/imports are missing.
+    HEYGEN_LIVE: bool = False
+    TIKTOK_LIVE: bool = False
+    OPENAI_ENABLED: bool = False
+    SLEEPER_ENABLED: bool = False
 
 
 def _as_bool(value: Optional[str]) -> bool:
@@ -102,6 +108,10 @@ def load_env() -> Env:
         TIKTOK_REDIRECT_URI=os.getenv("TIKTOK_REDIRECT_URI"),
         PUBLIC_BASE_URL=os.getenv("PUBLIC_BASE_URL"),
         DRY_RUN=_as_bool(os.getenv("DRY_RUN")),
+        HEYGEN_LIVE=_as_bool(os.getenv("HEYGEN_LIVE")),
+        TIKTOK_LIVE=_as_bool(os.getenv("TIKTOK_LIVE")),
+        OPENAI_ENABLED=_as_bool(os.getenv("OPENAI_ENABLED")),
+        SLEEPER_ENABLED=_as_bool(os.getenv("SLEEPER_ENABLED")),
     )
 
 
@@ -138,7 +148,14 @@ def build_tiktok(env: Env, http_client: Optional[Any] = None) -> TikTokAdapterLi
             _req(env.TIKTOK_REDIRECT_URI),
         )
         return TikTokAdapter(oauth, http_client=http_client, dry_run=env.DRY_RUN)
-    except Exception:
+    except Exception as exc:
+        # In live mode (either via Env object or OS env var), surface errors so
+        # callers fail fast and logs are noisy. This allows tests that set
+        # os.environ via monkeypatch to be respected when callers construct an
+        # Env manually.
+        live_flag = env.TIKTOK_LIVE or _as_bool(os.getenv("TIKTOK_LIVE"))
+        if live_flag:
+            raise
         from dataclasses import dataclass as _dc
 
         @_dc
@@ -193,7 +210,10 @@ def build_heygen(env: Env, http_client: Optional[Any] = None) -> HeyGenAdapterLi
     try:
         from adapters.heygen_adapter import HeyGenAdapter  # type: ignore
         return HeyGenAdapter(api_key=env.HEYGEN_API_KEY, http_client=http_client, dry_run=env.DRY_RUN)
-    except Exception:
+    except Exception as exc:
+        live_flag = env.HEYGEN_LIVE or _as_bool(os.getenv("HEYGEN_LIVE"))
+        if live_flag:
+            raise
         class _HeyGenShim:
             def __init__(self, api_key: Optional[str], http_client: Optional[Any], dry_run: bool) -> None:
                 self.api_key = api_key
