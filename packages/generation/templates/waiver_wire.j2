@@ -1,0 +1,25 @@
+{%- from "_macros.j2" import player_line, stat_row -%}
+
+🚨 WAIVER WIRE ALERT 🚨
+
+{% if player %} {{ player_line(player, position, team) }} {% else %} Unknown Player {% endif %}
+
+Why you should care:
+{% if reason %}
+{{ reason }}
+{% else %}
+A potential roster boost — check recent usage and matchup.
+{% endif %}
+
+Key stats:
+{% if stats %}
+{% for label, value in stats.items() %}
+- {{ stat_row(label, value) }}
+{% endfor %}
+{% else %}
+- No recent stats available.
+{% endif %}
+
+Rostered: {{ rostered_pct | default('0') }}%
+
+#WaiverWire #FantasyFootball

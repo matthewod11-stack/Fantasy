@@ -1,0 +1,15 @@
+{%- from "_macros.j2" import player_line, stat_row -%}
+
+🏆 Top Performers — Week {{ week }} 🏆
+
+{% for p in players %}
+{{ loop.index }}. {{ player_line(p.name, p.position, p.team) }}
+{% if p.stats %}
+  {% for k, v in p.stats.items() %}
+  - {{ stat_row(k, v) }}
+  {% endfor %}
+{% endif %}
+
+{% endfor %}
+
+Stay tuned for more weekly breakdowns.
