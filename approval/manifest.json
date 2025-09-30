@@ -1,0 +1,12 @@
+[
+  {
+    "id": "Tyreek Hill__waiver-wire__2",
+    "type": "waiver-wire",
+    "player": "Tyreek Hill",
+    "week": "2",
+    "approved": "true",
+    "reviewer": "test",
+    "note": "ok",
+    "updated_at": "now"
+  }
+]

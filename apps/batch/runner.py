@@ -9,6 +9,7 @@ import os
 import time
 from pathlib import Path
 from typing import List, TYPE_CHECKING, cast
+from datetime import datetime
 
 from adapters.wiring import load_env, build_openai, build_heygen, build_tiktok
 from apps.batch import manifest as manifest_lib
@@ -16,6 +17,8 @@ from apps.batch.planner import plan_week
 from packages.generation.pipelines import generate_content
 from packages.render.compositor import compose_video
 from adapters.heygen_adapter import HeyGenRenderRequest
+from packages.agents.packaging_agent import build_caption, build_hashtags, package_metadata, to_exportable
+from apps.cli import approval as approval_cli
 
 # For type-checkers only — keeps runtime flexible while satisfying Pylance
 if TYPE_CHECKING:
@@ -143,6 +146,49 @@ def run_pipeline(
         entries = manifest_lib.upsert(entries, new_entry, key_fields=("player", "kind", "week"))
         manifest_lib.write_manifest_atomic(manifest_path, entries)
         manifest_lib.write_csv_from_entries(out_root_path / "manifest.csv", entries)
+
+        # Approval gate: require entry present and approved in approval/manifest.csv or .json
+        approvals = approval_cli.read_manifest()
+        # Find matching approval by id or player/week/type
+        entry_id = f"{player}__{kind}__{week}"
+        approved = False
+        approval_row = None
+        for a in approvals:
+            if a.get("id") == entry_id or (a.get("player") == player and a.get("week") == str(week) and a.get("type") == kind):
+                approval_row = a
+                approved = (str(a.get("approved", "false")).lower() == "true")
+                break
+
+        if not approved:
+            # Log skipped item and write audit entry
+            audit_dir = out_root_path / "audit"
+            audit_dir.mkdir(parents=True, exist_ok=True)
+            skip_log = audit_dir / "skipped.log"
+            who = approval_row.get("reviewer") if approval_row else "none"
+            note = approval_row.get("note") if approval_row else "not in manifest"
+            skip_line = f"{datetime.utcnow().isoformat()}Z\t{entry_id}\tskipped\treviewer={who}\tnote={note}\n"
+            with skip_log.open("a", encoding="utf-8") as f:
+                f.write(skip_line)
+            # Continue without rendering/uploading; still generate packaging metadata for review
+            caption = build_caption(script_text, kind, week, dry_run=env.DRY_RUN)
+            hashtags = build_hashtags(kind, week)
+            meta = package_metadata(entry_id, kind, week, player or None, caption, hashtags, extra={"approved": False})
+            (out_root_path / f"{entry_id}.meta.json").write_text(to_exportable(meta), encoding="utf-8")
+            print(f"⏭️ Skipped {entry_id} — not approved; audit written to {skip_log}")
+            # Ensure tiktok_uploads.json exists when uploads were requested by caller
+            if do_upload:
+                up = out_root_path / "tiktok_uploads.json"
+                try:
+                    up.write_text(json.dumps({"uploads": [], "skipped": [entry_id]}, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+            continue
+
+        # If approved, write packaging metadata (approved=true)
+        caption = build_caption(script_text, kind, week, dry_run=env.DRY_RUN)
+        hashtags = build_hashtags(kind, week)
+        meta = package_metadata(entry_id, kind, week, player or None, caption, hashtags, extra={"approved": True, "approver": approval_row})
+        (out_root_path / f"{entry_id}.meta.json").write_text(to_exportable(meta), encoding="utf-8")
 
         # Optional render via HeyGen
         if do_render:
