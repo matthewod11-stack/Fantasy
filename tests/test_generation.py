@@ -16,8 +16,8 @@ def test_generate_content_start_sit_dry_run(monkeypatch):
     assert out["meta"]["player"] == "Bijan Robinson"
     # Script is deterministic and prefixed in dry-run mode
     assert out["script_text"].startswith("[dry-run] script:")
-    # Caption should be <= 120 and prefixed
-    assert out["caption"].startswith("[dry-run] Start Sit - Week 5")
+    # Caption should be <= 120 and include dry-run marker
+    assert out["caption"].startswith("[dry-run-") and "Week 5" in out["caption"]
     assert len(out["caption"]) <= 120
     # Hashtags include normalized kind and week
     assert "#Week5" in out["hashtags"]
@@ -30,6 +30,6 @@ def test_generate_content_waiver_wire_dry_run():
     assert out["meta"]["kind"] == "waiver-wire"
     assert out["meta"]["week"] == 8
     assert out["script_text"].startswith("[dry-run] script:")
-    assert out["caption"].startswith("[dry-run] Waiver Wire - Week 8")
+    assert out["caption"].startswith("[dry-run-") and "Week 8" in out["caption"]
     assert "#WaiverWire" in out["hashtags"]
     assert "#NFL" in out["hashtags"]

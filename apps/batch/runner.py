@@ -266,9 +266,22 @@ def approve_gate(gen_rec: GenerateRecord, week: int, out_root_path: Path) -> App
     approved = False
     approval_row = None
     for a in approvals:
+        # Accept explicit id match or a row matching player/week/type
         if a.get("id") == entry_id or (a.get("player") == gen_rec.player and a.get("week") == str(week) and a.get("type") == gen_rec.kind):
             approval_row = a
-            approved = (str(a.get("approved", "false")).lower() == "true")
+            # Normalize approved values strictly to boolean based on common CSV values
+            approved = str(a.get("approved", "false")).strip().lower() in ("1", "true", "yes")
+            # normalize/augment approval_row for structured logs
+            approval_row = {
+                "id": a.get("id", ""),
+                "type": a.get("type", ""),
+                "player": a.get("player", ""),
+                "week": a.get("week", ""),
+                "approved": "true" if approved else "false",
+                "reviewer": a.get("reviewer") or "",
+                "note": a.get("note") or "",
+                "updated_at": a.get("updated_at") or "",
+            }
             break
 
     if not approved:
@@ -277,9 +290,16 @@ def approve_gate(gen_rec: GenerateRecord, week: int, out_root_path: Path) -> App
         skip_log = audit_dir / "skipped.log"
         who = approval_row.get("reviewer") if approval_row else "none"
         note = approval_row.get("note") if approval_row else "not in manifest"
-        skip_line = f"{datetime.utcnow().isoformat()}Z\t{entry_id}\tskipped\treviewer={who}\tnote={note}\n"
+        # Write structured JSON log line per skip for easier parsing
+        skip_entry = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "entry_id": entry_id,
+            "action": "skipped",
+            "reviewer": who,
+            "note": note,
+        }
         with skip_log.open("a", encoding="utf-8") as f:
-            f.write(skip_line)
+            f.write(_json.dumps(skip_entry, ensure_ascii=False) + "\n")
     return ApproveRecord(entry_id=entry_id, approved=approved, approver=approval_row)
 
 
@@ -341,6 +361,34 @@ def publish_step(gen_rec: GenerateRecord, out_root_path: Path, tiktok, env) -> P
 
     data = video_file.read_bytes()
 
+    # Read generated metadata to confirm explicit publish target is present
+    meta_path = out_root_path / f"{gen_rec.entry_id}.meta.json"
+    if not meta_path.exists():
+        if not env.DRY_RUN:
+            raise RuntimeError(f"Missing metadata for {gen_rec.entry_id}; refusing to publish")
+        meta = {}
+    else:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            raise RuntimeError(f"Malformed metadata for {gen_rec.entry_id}; refusing to publish")
+    # If live run, require explicit publish_target in metadata to avoid accidental publishes
+    publish_target = meta.get("publish_target") if isinstance(meta, dict) else None
+    if not env.DRY_RUN and not publish_target:
+        raise RuntimeError(f"No publish_target in metadata for {gen_rec.entry_id}; publishing is blocked")
+    # Idempotency: check uploads file and skip if already uploaded
+    up = out_root_path / "tiktok_uploads.json"
+    existing = {"uploads": [], "skipped": []}
+    if up.exists():
+        try:
+            existing = json.loads(up.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {"uploads": [], "skipped": []}
+    # If an upload record for this entry exists, return it and avoid duplicate upload
+    for u in existing.get("uploads", []):
+        if u.get("entry_id") == gen_rec.entry_id:
+            return PublishRecord(entry_id=gen_rec.entry_id, upload_meta=u)
+
     access_token = _ensure_str(os.getenv("TIKTOK_ACCESS_TOKEN"))
     open_id = _ensure_str(os.getenv("TIKTOK_OPEN_ID"))
     if not env.DRY_RUN and (not access_token or not open_id):
@@ -351,7 +399,8 @@ def publish_step(gen_rec: GenerateRecord, out_root_path: Path, tiktok, env) -> P
     upload_res = tiktok.upload_video(access_token, open_id, upload_id, data, filename=video_file.name)
     status = tiktok.check_upload_status(access_token, open_id, upload_id)
 
-    up = out_root_path / "tiktok_uploads.json"
-    up.write_text(_json.dumps({"init": init, "upload": upload_res, "status": status}, indent=2), encoding="utf-8")
+    record = {"entry_id": gen_rec.entry_id, "init": init, "upload": upload_res, "status": status}
+    existing.setdefault("uploads", []).append(record)
+    up.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
 
-    return PublishRecord(entry_id=gen_rec.entry_id, upload_meta={"init": init, "upload": upload_res, "status": status})
+    return PublishRecord(entry_id=gen_rec.entry_id, upload_meta=record)

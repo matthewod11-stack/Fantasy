@@ -22,6 +22,7 @@ import os
 from adapters import OpenAIAdapter, ScriptRequest  # type: ignore
 from packages.agents import data_agent
 from packages.agents.script_agent import render_script
+from packages.agents.packaging_agent import build_caption as _build_caption, build_hashtags as _build_hashtags
 
 from packages.generation.template_resolver import resolve_template as _resolve_template, get_runtime_config
 
@@ -71,25 +72,7 @@ def _render_prompt(template: str, *, kind: str, week: int, player: Optional[str]
         return template
 
 
-def _build_caption(kind: str, week: int, *, dry_run: bool) -> str:
-    base = f"{kind.replace('-', ' ').title()} - Week {week}"
-    if dry_run:
-        base = f"[dry-run] {base}"
-    # Ensure <=120 chars
-    return base[:120]
 
-
-def _build_hashtags(kind: str, week: int) -> list[str]:
-    tags = [
-        "#FantasyFootball",
-        "#NFL",
-        f"#Week{week}",
-    ]
-    # Normalize kind to a tag like #StartSit or #WaiverWire
-    norm = "".join(part.capitalize() for part in kind.split("-"))
-    if norm:
-        tags.append(f"#{norm}")
-    return tags
 
 
 def generate_content(
@@ -152,7 +135,8 @@ def generate_content(
     else:
         script = rendered_or_polished
 
-    caption = _build_caption(kind, int(week), dry_run=getattr(adapter, "dry_run", False))
+    # Use packaging agent for caption/hashtag construction to centralize logic
+    caption = _build_caption(_ensure_script := script, kind, int(week), dry_run=getattr(adapter, "dry_run", False))
     hashtags = _build_hashtags(kind, int(week))
 
     return {
