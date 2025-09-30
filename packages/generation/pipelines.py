@@ -23,11 +23,7 @@ from adapters import OpenAIAdapter, ScriptRequest  # type: ignore
 from packages.agents import data_agent
 from packages.agents.script_agent import render_script
 
-# Reuse planner's template resolver to avoid duplication
-try:
-    from apps.batch.planner import _choose_template_for_kind as _resolve_template  # type: ignore
-except Exception:  # pragma: no cover - fallback if import path changes
-    _resolve_template = None  # type: ignore
+from packages.generation.template_resolver import resolve_template as _resolve_template, get_runtime_config
 
 
 def _load_template_text(kind: str) -> str:
@@ -148,7 +144,8 @@ def generate_content(
     # adapter is in dry-run mode, pass the rendered template to the adapter to
     # obtain the deterministic stub. If OPENAI is enabled, render_script would
     # already have used the adapter.
-    openai_enabled = os.getenv("OPENAI_ENABLED", "false").lower() in ("1", "true", "yes")
+    cfg = get_runtime_config()
+    openai_enabled = (cfg.get_env("OPENAI_ENABLED", "false") or "false").lower() in ("1", "true", "yes")
     if getattr(adapter, "dry_run", False) and not openai_enabled:
         req = ScriptRequest(prompt=rendered_or_polished, audience="fantasy football", tone="energetic")
         script = adapter.generate_script(req)

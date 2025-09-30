@@ -20,6 +20,7 @@ from apps.batch import manifest as manifest_lib
 from apps.batch.planner import plan_week
 from apps.export.scheduler_export import generate_scheduler_manifest
 from packages.agents.script_agent import render_script
+from packages.generation.template_resolver import resolve_template, get_runtime_config
 from packages.agents import data_agent
 from adapters.wiring import load_env  # Ensure wiring is available for building adapters when needed
 from apps.batch.runner import run_pipeline
@@ -66,7 +67,7 @@ def generate(
     player: str = typer.Option(None, "--player", "-p", help="Fantasy football player name"),
     week: Optional[int] = typer.Option(None, "--week", "-w", help="NFL week number (1-18)"),
     type: str = typer.Option(..., "--type", "-t", help="Type of content to generate (aliases allowed)"),
-    strict: bool = typer.Option(True, "--strict/--no-strict", help="When strict, fail on scripts longer than 70 words; otherwise auto-trim"),
+    strict: bool = typer.Option(False, "--strict/--no-strict", help="When strict, fail on scripts longer than 70 words; otherwise auto-trim"),
     with_stats: bool = typer.Option(os.getenv("SLEEPER_ENABLED", "false").lower() == "true", "--with-stats/--no-stats", help="Enable fetching live Sleeper stats (overrides SLEEPER_ENABLED env)"),
     batch_week: Optional[int] = typer.Option(None, "--batch-week", help="Generate a full batch for a week (produces multiple posts)"),
     players: Optional[str] = typer.Option(None, "--players", help="Comma-separated list of players for batch generation"),
@@ -83,6 +84,11 @@ def generate(
         data_agent.SLEEPER_ENABLED = bool(with_stats)
     except Exception:
         pass
+
+    # Snapshot runtime config for CLI-driven commands
+    cfg = get_runtime_config()
+    # Allow CLI flag to override env-derived DRY_RUN
+    cfg.DRY_RUN = bool(dry_run)
 
     canonical_kind = normalize_kind(type)
     if canonical_kind not in PRD_CONTENT_KINDS:
@@ -292,23 +298,8 @@ def _do_local_render(payload: Dict[str, object], out_dir: Optional[str] = None) 
 
 
 def _resolve_template(kind: str) -> Optional[Path]:
-    from apps.api.main import TEMPLATE_FILENAME_OVERRIDES, TEMPLATE_ROOT, LEGACY_TEMPLATE_ROOT  # lazy import to avoid CLI start-up cost
-
-    override = TEMPLATE_FILENAME_OVERRIDES.get(kind)
-    candidates = []
-    if override:
-        candidates.append(TEMPLATE_ROOT / override)
-    candidates.append(TEMPLATE_ROOT / f"{kind}.md")
-    candidates.append(TEMPLATE_ROOT / f"{kind.replace('-', '_')}.md")
-    if override:
-        candidates.append(LEGACY_TEMPLATE_ROOT / override)
-    candidates.append(LEGACY_TEMPLATE_ROOT / f"{kind}.md")
-    candidates.append(LEGACY_TEMPLATE_ROOT / f"{kind.replace('-', '_')}.md")
-
-    for path in candidates:
-        if path.exists():
-            return path
-    return None
+    # Delegate to the shared resolver for deterministic behavior across CLI/API/pipelines
+    return resolve_template(kind)
 
 
 if __name__ == "__main__":

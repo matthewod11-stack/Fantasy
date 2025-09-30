@@ -18,6 +18,7 @@ from apps.core import guardrails
 from packages.agents.data_agent import fetch_player_context
 from packages.agents.script_agent import render_script
 from adapters.wiring import load_env  # central adapter env
+from packages.generation.template_resolver import resolve_template, get_runtime_config
 
 from .config import get_settings
 from .schemas import (
@@ -37,34 +38,8 @@ settings = get_settings()
 # Load adapter-related env at startup
 _ENV = load_env()
 
-# Template locations
-TEMPLATE_ROOT = Path("templates") / "script_templates"
-LEGACY_TEMPLATE_ROOT = Path("prompts") / "templates"
-TEMPLATE_FILENAME_OVERRIDES = {
-    "start-sit": "start_sit.md",
-    "waiver-wire": "waiver_wire.md",
-}
-
-
-def _resolve_template(kind: str) -> Path:
-    """Locate a template file for a given content kind."""
-    override = TEMPLATE_FILENAME_OVERRIDES.get(kind)
-    candidates = []
-    if override:
-        candidates.append(TEMPLATE_ROOT / override)
-    candidates.append(TEMPLATE_ROOT / f"{kind}.md")
-    # Allow underscore variant for backward compatibility
-    candidates.append(TEMPLATE_ROOT / f"{kind.replace('-', '_')}.md")
-    # Legacy fallbacks
-    if override:
-        candidates.append(LEGACY_TEMPLATE_ROOT / override)
-    candidates.append(LEGACY_TEMPLATE_ROOT / f"{kind}.md")
-    candidates.append(LEGACY_TEMPLATE_ROOT / f"{kind.replace('-', '_')}.md")
-
-    for path in candidates:
-        if path.exists():
-            return path
-    return Path()
+# Shared template resolver
+_resolve_template = resolve_template
 
 
 def _parse_header_bool(value: Optional[str]) -> Optional[bool]:
@@ -144,7 +119,9 @@ async def generate_content(
         )
 
         strict_override = _parse_header_bool(guardrails_strict)
-        mode_env = os.getenv("GUARDRAILS_LENGTH_MODE", "fail").lower()
+        cfg = get_runtime_config()
+        # Default behavior: respect GUARDRAILS_LENGTH_MODE env (default 'fail')
+        mode_env = (cfg.get_env("GUARDRAILS_LENGTH_MODE", "fail") or "fail").lower()
         default_mode = "trim" if mode_env == "trim" else "fail"
         mode = "fail" if strict_override is True else "trim" if strict_override is False else default_mode
 
