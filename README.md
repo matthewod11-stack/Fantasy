@@ -240,4 +240,51 @@ pytest -q tests/test_batch.py
 
 See `docs/PRD.md` for the product requirements document and template contracts.
 
+## Glossary
+
+- DRY_RUN: When true, adapters avoid external network calls and produce local artifacts for development.
+- manifest.json / manifest.csv: Deterministic record of generated scripts for a week located under `.out/week-<N>/`.
+- approval/manifest.csv: A CSV controlling which generated entries are approved for publishing.
+- plan.json: Output of the planner describing which players/types to generate for a given week.
+
+## Quick "Tuesday Run" Playbook
+
+Use this checklist to produce and inspect a weekly batch (developer-friendly, safe defaults):
+
+1. Ensure your environment is ready
+
+```bash
+# copy sample env and adjust for your machine (keep DRY_RUN=true for safety)
+cp .env.example .env
+# seed approvals so nothing is unintentionally skipped
+cp approval/manifest.example.csv approval/manifest.csv
+```
+
+2. Run preflight doctor
+
+```bash
+make doctor
+```
+
+3. Produce a dry-run batch for the target week (e.g., week 1)
+
+```bash
+make dry-run week=1
+```
+
+4. Inspect artifacts
+
+```bash
+ls -la .out/week-1
+cat .out/week-1/manifest.json
+```
+
+5. Export scheduler CSV for your scheduling system
+
+```bash
+make export-scheduler week=1 start_date=$(date +%Y-%m-%d) timezone=America/Los_Angeles
+```
+
+If you need to run the full onboarding (recommended for new contributors), run `python scripts/onboard.py` which runs `make setup` and a single dry-run and prints the artifact locations.
+
 *** End of README ***

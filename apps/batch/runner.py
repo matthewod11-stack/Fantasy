@@ -404,3 +404,74 @@ def publish_step(gen_rec: GenerateRecord, out_root_path: Path, tiktok, env) -> P
     up.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
 
     return PublishRecord(entry_id=gen_rec.entry_id, upload_meta=record)
+
+
+def doctor_check() -> None:
+    """Run lightweight preflight checks and print actionable guidance.
+
+    Checks performed:
+    - Required env vars presence (best-effort; DRY_RUN tolerant)
+    - Approval manifest existence and parseability
+    - Local cache/artifact dir sanity (.out)
+    Exits with non-zero code when a fatal misconfiguration is detected.
+    """
+    issues = []
+    env = load_env()
+
+    # Check core envs
+    missing = []
+    if not env.OPENAI_API_KEY and not env.OPENAI_ENABLED:
+        missing.append("OPENAI_API_KEY (or set OPENAI_ENABLED=true for local testing)")
+    if not env.HEYGEN_API_KEY and not env.HEYGEN_LIVE:
+        missing.append("HEYGEN_API_KEY (or set HEYGEN_LIVE=false to use dry-run)")
+    if not env.TIKTOK_CLIENT_KEY or not env.TIKTOK_CLIENT_SECRET:
+        missing.append("TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET (needed for TikTok OAuth)")
+
+    if missing:
+        issues.append(("env", missing))
+
+    # Approval manifest
+    try:
+        approvals = approval_cli.read_manifest()
+        if not isinstance(approvals, list):
+            issues.append(("approval", ["approval/manifest.csv or manifest.json exists but could not be parsed"]))
+        elif len(approvals) == 0:
+            issues.append(("approval", ["No approvals present in approval/manifest.csv — create one from approval/manifest.example.csv or run apps.cli.approval.init"]))
+    except Exception as exc:  # pragma: no cover - best-effort
+        issues.append(("approval", [f"Failed reading approval manifest: {exc}"]))
+
+    # Cache/artifact dir sanity
+    out = Path(".out")
+    if not out.exists():
+        issues.append(("cache", [".out directory not present — run a dry run to create artifacts: make dry-run week=1"]))
+    else:
+        # Check for any week-* subdirs
+        weeks = [p for p in out.iterdir() if p.is_dir() and p.name.startswith("week-")]
+        if not weeks:
+            issues.append(("cache", [".out exists but contains no week-<N> directories — try: make dry-run week=1"]))
+
+    # Print results
+    print("\nDoctor check results:")
+    if not issues:
+        print("  ✅ All quick checks passed. You're good to go (DRY_RUN may still be set).")
+        return
+
+    fatal = False
+    for kind, msgs in issues:
+        print(f"\n  [{kind}]")
+        for m in msgs:
+            print(f"    - {m}")
+            # mark as fatal for env/approval issues
+            if kind in ("env", "approval"):
+                fatal = True
+
+    print("\nSuggested actions:")
+    print("  - Copy .env.example -> .env and fill in credentials if you intend to run live flows")
+    print("  - Copy approval/manifest.example.csv -> approval/manifest.csv to seed approvals")
+    print("  - Run a dry-run to generate local artifacts: make dry-run week=1")
+
+    if fatal:
+        print("\nDoctor detected issues that may block live runs. Fix the above and re-run: make doctor")
+        raise SystemExit(2)
+    else:
+        print("\nDoctor found non-fatal issues. You can still run in DRY_RUN mode.")

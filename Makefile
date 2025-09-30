@@ -3,6 +3,8 @@
 .PHONY: batch-week dry-run export-scheduler metrics-summary
 .PHONY: up-api down-api logs-api health-api
 
+.PHONY: doctor
+
 # -----------------------------
 # Core (existing behavior)
 # -----------------------------
@@ -43,6 +45,11 @@ lint:
 # Check API health
 health:
 	bash scripts/health.sh
+
+
+# Developer preflight checks that validate env, approvals, and local cache health
+doctor:
+	python -c "from apps.batch.runner import doctor_check; doctor_check()"
 
 coverage:
 	@echo "Running pytest with coverage"
